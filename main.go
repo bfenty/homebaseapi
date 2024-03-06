@@ -1,21 +1,17 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
-
-	// "strconv"
-	"database/sql"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	// "github.com/golang-module/carbon/v2"
 )
 
-// Define the shift range struct
 type shift []struct {
 	ID         int    `json:"id"`
 	First_name string `json:"first_name"`
@@ -31,7 +27,6 @@ type shift []struct {
 	Clock_in string `json:"clock_in"`
 }
 
-// Define the individual shift struct
 type shiftdetail struct {
 	ID         int
 	First_name string
@@ -47,97 +42,79 @@ type shiftdetail struct {
 }
 
 func shiftinsert(shifts shift) {
-
 	username := os.Getenv("USER")
 	password := os.Getenv("PASS")
 	server := os.Getenv("SERVER")
 	port := os.Getenv("PORT")
-
-	//open connection to database
 	connectstring := username + ":" + password + "@tcp(" + server + ":" + port + ")/orders"
-	db, err := sql.Open("mysql",
-		connectstring)
+
+	db, err := sql.Open("mysql", connectstring)
 	if err != nil {
-		fmt.Println("Message: ", err.Error())
+		log.Fatalf("Failed to open database connection: %v", err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Failed to ping database: %v", err)
 	}
 
-	//Test Connection
-	pingErr := db.Ping()
-	if pingErr != nil {
-		fmt.Println("Message: ", err.Error())
-	}
-
-	for i := range shifts {
-		var newquery string = "replace into shifts (shift_id,payroll_id,role,clock_in,paid_hours,scheduled_hours,wage_rate) VALUES (?,?,?,?,?,?,?)"
-		fmt.Println(newquery, shifts[i].Shift_id, shifts[i].Payroll_id, shifts[i].Role, shifts[i].Clock_in, shifts[i].Labor.Paid_hours, shifts[i].Labor.Scheduled_hours, shifts[i].Labor.Wage_rate)
-		if shifts[i].Payroll_id != "" {
-			rows, err := db.Query(newquery, shifts[i].Shift_id, shifts[i].Payroll_id, shifts[i].Role, shifts[i].Clock_in, shifts[i].Labor.Paid_hours, shifts[i].Labor.Scheduled_hours, shifts[i].Labor.Wage_rate)
+	for _, s := range shifts {
+		if s.Payroll_id != "" {
+			parsedTime, err := time.Parse(time.RFC3339, s.Clock_in)
 			if err != nil {
-				fmt.Println("Message: ", err.Error())
+				log.Printf("Failed to parse time [%s] for shift [%d]: %v", s.Clock_in, s.Shift_id, err)
+				continue // Skip this entry or handle the error as appropriate
 			}
-			err = rows.Err()
+
+			// Convert to UTC and format as MySQL datetime string
+			clockInUTC := parsedTime.UTC().Format("2006-01-02 15:04:05")
+
+			query := "REPLACE INTO shifts (shift_id, payroll_id, role, clock_in, paid_hours, scheduled_hours, wage_rate) VALUES (?, ?, ?, ?, ?, ?, ?)"
+			_, err = db.Exec(query, s.Shift_id, s.Payroll_id, s.Role, clockInUTC, s.Labor.Paid_hours, s.Labor.Scheduled_hours, s.Labor.Wage_rate)
 			if err != nil {
-				fmt.Println("Message: ", err.Error())
+				log.Printf("Failed to insert shift [%d]: %v", s.Shift_id, err)
+			} else {
+				log.Printf("Successfully inserted shift [%d] with clock-in time %s", s.Shift_id, clockInUTC)
 			}
 		}
 	}
 }
 
 func main() {
-	fmt.Println("Setting URL...")
-	location := os.Getenv("location")
+	log.Println("Starting process to insert shifts...")
+	location := os.Getenv("LOCATION")
 	limit := "100"
-	end_date := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Local)
+	end_date := time.Now()
 	start_date := end_date.AddDate(0, 0, -1)
-	API_key := os.Getenv("API_key")
+	API_key := os.Getenv("API_KEY")
 
-	fmt.Println("Finding starting order...")
 	url := "https://app.joinhomebase.com/api/public/locations/" + location + "/timecards?page=1&per_page=" + limit + "&start_date=" + start_date.Format("2006-1-2") + "&end_date=" + end_date.Format("2006-1-2") + "&date_filter=clock_in"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatalf("Failed to create HTTP request: %v", err)
+	}
 
-	fmt.Println("Creating Request...")
-	req, _ := http.NewRequest("GET", url, nil)
-
-	fmt.Println("Setting Headers...")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Add("Authorization", "Bearer "+API_key)
 
-	fmt.Println("Executing Request...")
-	res, _ := http.DefaultClient.Do(req)
-
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatalf("Failed to execute request: %v", err)
+	}
 	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
 
-	fmt.Println("Creating Shift Structure...")
-	shifts := shift{}
-
-	fmt.Println("Loading JSON...")
-	jsonErr := json.Unmarshal(body, &shifts)
-	if jsonErr != nil {
-		fmt.Println("Error:", jsonErr.Error())
-		fmt.Println("Body:", string(body))
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatalf("Failed to read response body: %v", err)
 	}
 
-	fmt.Println("Inserting Shifts to Database...")
+	var shifts shift
+	err = json.Unmarshal(body, &shifts)
+	if err != nil {
+		log.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
+
 	shiftinsert(shifts)
-
-	//Go through the range of shifts
-	var tempshift shiftdetail
-	fmt.Println("Unpacking JSON...")
-	for i := range shifts {
-		var err error
-		fmt.Println(shifts[i].Payroll_id)
-		tempshift.ID = shifts[i].ID
-		tempshift.First_name = shifts[i].First_name
-		tempshift.Last_name = shifts[i].Last_name
-		tempshift.Payroll_id = shifts[i].Payroll_id
-		tempshift.Shift_id = shifts[i].Shift_id
-		tempshift.Role = shifts[i].Role
-		tempshift.Labor.Paid_hours = shifts[i].Labor.Paid_hours
-		tempshift.Labor.Scheduled_hours = shifts[i].Labor.Scheduled_hours
-		tempshift.Clock_in, err = time.Parse(time.RFC3339, shifts[i].Clock_in)
-		fmt.Println(tempshift.Clock_in.Month(), "-", tempshift.Clock_in.Day(), "-", tempshift.Clock_in.Year())
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-	}
+	log.Println("Finished inserting shifts.")
 }
