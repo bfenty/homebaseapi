@@ -109,6 +109,9 @@ func main() {
 		log.Fatalf("Failed to read response body: %v", err)
 	}
 
+	// Debug: Log the raw JSON string
+	log.Printf("Raw JSON response: %s", string(body))
+
 	var shifts shift
 	err = json.Unmarshal(body, &shifts)
 	if err != nil {
