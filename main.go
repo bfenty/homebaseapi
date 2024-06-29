@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gosuri/uiprogress"
 )
 
 type shift []struct {
@@ -59,7 +60,15 @@ func shiftinsert(shifts shift) {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
+	// Initialize progress bar
+	uiprogress.Start()                                                       // start rendering
+	bar := uiprogress.AddBar(len(shifts)).AppendCompleted().PrependElapsed() // add a new bar
+	bar.PrependFunc(func(b *uiprogress.Bar) string {
+		return "Updating Shifts: " // prepend the current processing state
+	})
+
 	for _, s := range shifts {
+		bar.Incr() //update progress bar
 		if s.Payroll_id != "" {
 			parsedTime, err := time.Parse(time.RFC3339, s.Clock_in)
 			if err != nil {
@@ -86,7 +95,7 @@ func main() {
 	location := os.Getenv("LOCATION")
 	limit := "100"
 	end_date := time.Now()
-	start_date := end_date.AddDate(0, 0, -1)
+	start_date := end_date.AddDate(0, 0, -2)
 	API_key := os.Getenv("API_KEY")
 
 	url := "https://app.joinhomebase.com/api/public/locations/" + location + "/timecards?page=1&per_page=" + limit + "&start_date=" + start_date.Format("2006-1-2") + "&end_date=" + end_date.Format("2006-1-2") + "&date_filter=clock_in"
@@ -110,7 +119,7 @@ func main() {
 	}
 
 	// Debug: Log the raw JSON string
-	log.Printf("Raw JSON response: %s", string(body))
+	// log.Debug("Raw JSON response: %s", string(body))
 
 	var shifts shift
 	err = json.Unmarshal(body, &shifts)
